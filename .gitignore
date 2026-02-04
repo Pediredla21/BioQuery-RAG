@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# Vector database
+vectorstore/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# PDFs (optional – recommended)
+data/raw_pdfs/*.pdf
