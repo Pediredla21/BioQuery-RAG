@@ -1,148 +1,240 @@
-# BioQuery 🧬📄 — Biology Paper RAG Assistant (with Citations)
+# BioQuery 🧬 — Biology Research Paper RAG Assistant
 
-BioQuery is a **document-grounded question-answering assistant** for biology research papers.
-You can upload one or multiple PDFs, build a local FAISS index, and ask questions — the app responds with:
-- ✅ Answers based only on the selected papers
-- ✅ Page-level citations
-- ✅ Evidence snippets (retrieved text used to generate the answer)
+<div align="center">
 
-This project is built as a portfolio-grade demo of **RAG (Retrieval-Augmented Generation)** using:
-- **FAISS** for vector search
-- **Sentence-Transformers embeddings** for semantic retrieval
-- **Groq LLM** for fast generation
-- **Streamlit** for an interactive UI
+**Ask questions about biology research papers and get cited, grounded answers.**
+
+Upload PDFs → Build vector index → Ask questions in natural language → Get answers with page citations
+
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python)](https://python.org)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.37-red?style=flat-square&logo=streamlit)](https://streamlit.io)
+[![FAISS](https://img.shields.io/badge/FAISS-Vector_Search-green?style=flat-square)](https://faiss.ai)
+[![Groq](https://img.shields.io/badge/Groq-LLM_API-orange?style=flat-square)](https://console.groq.com)
+
+</div>
 
 ---
 
-## ✨ Key Features
+## 📖 What is BioQuery?
 
-- **Multi-PDF Paper Library**
-  - Upload multiple papers
-  - Select which papers to index and search
-- **Citation-First Answers**
-  - Shows sources as: `PDF name + Page number`
-  - Displays evidence snippets used for answering
-- **“I don’t know” Safety**
-  - If the answer is not supported by the selected paper(s), the assistant refuses or marks low confidence
-- **Fast Local Retrieval**
-  - FAISS index stored locally in `vectorstore/`
+BioQuery is a **RAG (Retrieval-Augmented Generation)** application that lets you chat with biology research papers. Instead of reading a 30-page paper yourself, you can:
+
+- Ask **"Summarize this paper"** → get a structured, student-friendly summary
+- Ask **"What methods were used?"** → get a cited answer pointing to the exact page
+- Ask **"What are the main findings?"** → get bullet-pointed results with source references
+- Ask **anything outside the paper** → get an honest "I don't know based on this paper" response (no hallucination)
+
+The system only answers from the content of your uploaded PDFs — it never makes things up.
+
+---
+
+## ✨ Features
+
+| Feature | Details |
+|---|---|
+| **Multi-PDF Support** | Upload and index multiple research papers at once |
+| **Chat-Driven Summarization** | Just ask "summarize this paper" in the chat — no separate button needed |
+| **Page-Level Citations** | Every answer references the source file and page number |
+| **Evidence Panel** | See the exact text passages retrieved to generate each answer |
+| **Confidence Indicator** | 🟢 High / 🟡 Medium / 🔴 Low confidence based on retrieval similarity |
+| **Anti-Hallucination** | Model refuses to answer if evidence isn't found in the paper |
+| **Quick-Start Buttons** | Click to pre-fill common questions instantly |
+| **Reset Chat** | Clear conversation history with one click |
 
 ---
 
 ## 🧱 Tech Stack
 
-- Python 3.11+
-- Streamlit (UI)
-- FAISS (vector database)
-- Sentence-Transformers (`all-MiniLM-L6-v2`) for embeddings
-- Groq API for LLM responses
+| Layer | Technology | Why |
+|---|---|---|
+| **UI** | Streamlit | Fast to build, great for ML apps |
+| **Embeddings** | Sentence-Transformers (`all-MiniLM-L6-v2`) | Lightweight, runs on CPU, great semantic search |
+| **Vector Database** | FAISS | Fast local similarity search, no server needed |
+| **PDF Loading** | LangChain + PyPDF | Reliable page-by-page extraction with metadata |
+| **LLM** | Groq API (`llama-3.3-70b-versatile`) | Free API, very fast inference |
+| **Language** | Python 3.11+ | Standard for ML/AI projects |
 
 ---
 
 ## 📂 Project Structure
 
-RAG_BIOO/
-app/
-ingest.py # Build FAISS index from PDFs
-query.py # CLI Q&A (loads FAISS + asks Groq)
-ui.py # Streamlit UI
-utils.py
-data/
-raw_pdfs/ # Uploaded PDFs stored here
-vectorstore/ # Saved FAISS index
-.env # API keys (not committed)
-requirements.txt
-README.md
-
+```
+BioQuery-RAG/
+├── app/
+│   ├── utils.py       # Shared helpers: path resolution, citation formatting
+│   ├── ingest.py      # PDF loading, chunking, FAISS index building
+│   ├── query.py       # Retrieval, answer generation, paper summarization
+│   └── ui.py          # Streamlit UI — the main app entry point
+│
+├── data/
+│   └── raw_pdfs/      # Your uploaded PDFs go here (auto-created)
+│
+├── vectorstore/       # FAISS index files (auto-generated, git-ignored)
+│
+├── .env               # Your API keys (never committed to git)
+├── .gitignore
+├── requirements.txt
+└── README.md
+```
 
 ---
 
-## 🚀 Setup & Run (Local)
+## 🚀 Quick Start — Run Locally
 
-### 1) Create & activate venv
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Pediredla21/BioQuery-RAG.git
+cd BioQuery-RAG
+```
+
+### 2. Create a virtual environment
+
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows
+```
 
-2) Install dependencies
-python -m pip install -r requirements.txt
+### 3. Install dependencies
 
-3) Add Groq API key
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-Create .env:
+> ⏱️ **First run note:** The `sentence-transformers` embedding model (~90 MB) will be downloaded automatically on first use. This only happens once.
 
-GROQ_API_KEY=your_key_here
+### 4. Get a free Groq API key
 
-4) Put PDFs into data/raw_pdfs/
+1. Go to [https://console.groq.com](https://console.groq.com)
+2. Sign up and create an API key (free)
+3. Create a `.env` file in the project root:
 
-Example:
+```bash
+echo "GROQ_API_KEY=your_key_here" > .env
+```
 
-cp "/path/to/Ref 1.pdf" data/raw_pdfs/
-cp "/path/to/Ref 2.pdf" data/raw_pdfs/
+### 5. Run the app
 
-5) Build index
-python app/ingest.py
+```bash
+streamlit run app/ui.py
+```
 
-6) Run UI
-python -m streamlit run app/ui.py
-
-
-Open:
-
-http://localhost:8501
-
-🧪 Demo (Screenshot / Video)
-Add a screenshot
-
-Create a folder:
-
-assets/
-
-
-Save an image:
-
-assets/demo.png
-
-
-Then embed in README:
-
-![BioQuery Demo](assets/demo.png)
-
-Add a short GIF (recommended)
-
-Record a quick screen capture (10–20 sec) and convert to GIF as assets/demo.gif, then:
-
-![BioQuery GIF](assets/demo.gif)
-
-✅ What This Project Demonstrates (for Recruiters)
-
-End-to-end RAG pipeline
-
-Vector search with FAISS
-
-Strong UX: upload → index → ask → cite evidence
-
-Safe behavior: refuse when evidence is missing
-
-Production habits: environment variables, clean folder structure, reproducible setup
-
-🔮 Future Improvements
-
-Compare mode: “Ref1 vs Ref2 answer comparison”
-
-Export chat to Markdown/PDF
-
-Per-document FAISS indexes + caching
-
-Add evaluation: retrieval accuracy & citation correctness
-
+Open your browser at **[http://localhost:8501](http://localhost:8501)**
 
 ---
 
-## 6) Right now: “I want upload these two and ask questions”
+## 🎮 How to Use
 
-If your UI already looks like your last screenshot, do this flow:
+| Step | Action |
+|---|---|
+| 1 | Upload your biology PDF(s) using the sidebar |
+| 2 | Click **Save PDFs** |
+| 3 | Click **Build / Rebuild Index** |
+| 4 | Ask any question in the chat |
 
-1) Upload both PDFs  
-2) Click
+**Example questions to try:**
+- *"Summarize this paper"*
+- *"What is the main research question?"*
+- *"What methods or datasets were used?"*
+- *"What are the key findings?"*
+- *"What are the limitations mentioned?"*
+- *"What do the authors conclude?"*
+
+---
+
+## 🧠 How It Works (RAG Architecture)
+
+```
+┌─────────────────── INDEXING (done once) ───────────────────┐
+│                                                              │
+│  PDF File  ──►  Pages  ──►  Chunks (800 chars)             │
+│                               │                             │
+│                               ▼                             │
+│                     Embedding Model                         │
+│               (all-MiniLM-L6-v2, 384-dim)                  │
+│                               │                             │
+│                               ▼                             │
+│                    FAISS Vector Index  ──► Saved to disk    │
+└──────────────────────────────────────────────────────────────┘
+
+┌─────────────────── QUERYING (every question) ───────────────┐
+│                                                              │
+│  User Question ──► Embed Question ──► FAISS Search          │
+│                                           │                 │
+│                                    Top-K Chunks             │
+│                              (most similar text passages)   │
+│                                           │                 │
+│                                  Groq LLM (llama-3.3-70b)  │
+│                          Context: chunks + question         │
+│                                           │                 │
+│                               Grounded Answer + Citations   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Why RAG instead of just asking an LLM?**
+
+A plain LLM (like ChatGPT) answers from its training data and can hallucinate. RAG forces the model to only use the text retrieved from your document, making answers trustworthy and verifiable.
+
+---
+
+## 🔎 Code Walkthrough (for interviews)
+
+### `app/utils.py`
+Shared helpers used by all other modules:
+- `get_project_root()` — resolves the absolute path to the project root so imports and file paths always work
+- `get_pdf_dir()` / `get_vectorstore_dir()` — return correct paths regardless of where you run the app from
+- `format_source_label()` — formats a citation label like `"paper.pdf • Page 3"` from LangChain metadata
+
+### `app/ingest.py`
+The indexing pipeline (runs when you click "Build Index"):
+1. **Load PDFs** using `PyPDFLoader` — extracts text page by page, adds `source_name` to metadata
+2. **Chunk** the pages into ~800-character overlapping segments using `RecursiveCharacterTextSplitter`
+3. **Embed** each chunk using the `all-MiniLM-L6-v2` model (384-dimensional vectors)
+4. **Index** all vectors in FAISS and save to disk
+
+### `app/query.py`
+The retrieval and generation pipeline (runs on every question):
+1. **Load vectorstore** from disk (only loads once per session)
+2. **Embed the question** using the same model as indexing
+3. **Retrieve** top-k most similar chunks via FAISS L2 distance search
+4. **Compute confidence** from the distance score (lower = better match)
+5. **Format context** with numbered citation blocks `[1]`, `[2]`, ...
+6. **Call Groq** with a strict system prompt that forces citation-backed answers
+7. For summary requests: retrieves from 4 different angles (intro, methods, results, conclusions) to cover the whole paper
+
+### `app/ui.py`
+The Streamlit frontend:
+- Sidebar: upload + index flow
+- Main area: chat interface with quick-start buttons
+- Right panel: evidence snippets with expandable source passages
+- `is_summary_request()`: keyword detection to route summary vs Q&A
+
+---
+
+## 🎤 Interview Explanation (one paragraph)
+
+> *"BioQuery is a Retrieval-Augmented Generation system. First, I built an indexing pipeline that loads PDFs page by page, splits them into ~800-character overlapping chunks, and converts each chunk to a vector embedding using a Sentence-Transformer model. These vectors are stored in a FAISS index on disk. When a user asks a question, I embed the question the same way and use FAISS to find the top-k most similar chunks by L2 distance — those are the most relevant passages from the paper. I then pass those chunks as context to the Groq LLM with a strict system prompt that forces the model to only use the provided context and always cite sources. If the answer isn't in the paper, the model says so explicitly, which prevents hallucination. The Streamlit UI adds a clean upload → index → chat flow with an evidence panel showing the exact retrieved passages."*
+
+---
+
+## 🔮 Potential Future Improvements
+
+- **Multi-paper comparison** — "How does Paper A's method differ from Paper B?"
+- **Chat history export** — download conversation as Markdown or PDF
+- **Per-paper indexes** — separate FAISS index per paper for selective searching
+- **Evaluation suite** — measure retrieval accuracy and citation correctness
+- **Abstract auto-detection** — automatically find and display the paper's abstract
+
+---
+
+## 📄 License
+
+MIT License — free to use, adapt, and build on for your own projects.
+
+---
+
+<div align="center">
+Built with ❤️ as a portfolio project for biology research paper analysis.
+</div>

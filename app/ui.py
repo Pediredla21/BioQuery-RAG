@@ -1,285 +1,324 @@
+"""
+ui.py — Streamlit UI for BioQuery: Biology Research Paper RAG Assistant
+
+Flow:
+  1. Upload PDF(s) in the sidebar.
+  2. Click "Build Index" — the app processes and indexes the PDFs.
+  3. Ask any question in the chat.
+     - If you ask for a summary ("summarize this paper", "give me an overview"),
+       the app generates a structured summary automatically.
+     - Otherwise, it retrieves relevant passages and answers with citations.
+"""
+
+import sys
 import os
-import time
 from pathlib import Path
+
 import streamlit as st
 from dotenv import load_dotenv
-from groq import Groq
 
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
+# Make sure the app/ folder is in the Python path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from utils import get_pdf_dir, get_vectorstore_dir
+from ingest import ingest_pdfs_from_paths
+from query import load_vectorstore, answer_question, summarize_paper
 
 load_dotenv()
 
-PDF_DIR = Path("data/raw_pdfs")
-VECTORSTORE_DIR = Path("vectorstore")
-
-st.set_page_config(page_title="BioQuery • Research RAG", layout="wide")
-
-# ---------- Core (cached) ----------
-@st.cache_resource
-def get_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"},
-    )
-
-def vectorstore_exists() -> bool:
-    return (VECTORSTORE_DIR / "index.faiss").exists() and (VECTORSTORE_DIR / "index.pkl").exists()
-
-def list_pdfs():
-    PDF_DIR.mkdir(parents=True, exist_ok=True)
-    return sorted([p.name for p in PDF_DIR.glob("*.pdf")])
-
-def ingest_selected_pdfs(selected_files):
-    if not selected_files:
-        return False, "Please select at least one PDF."
-
-    docs = []
-    for fname in selected_files:
-        loader = PyPDFLoader(str(PDF_DIR / fname))
-        docs.extend(loader.load())
-
-    if not docs:
-        return False, "No pages were loaded. Check your PDF file(s)."
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = splitter.split_documents(docs)
-
-    embeddings = get_embeddings()
-    db = FAISS.from_documents(chunks, embeddings)
-
-    VECTORSTORE_DIR.mkdir(parents=True, exist_ok=True)
-    db.save_local(str(VECTORSTORE_DIR))
-
-    return True, f"Indexed {len(selected_files)} PDF(s) • {len(docs)} pages • {len(chunks)} chunks."
-
-@st.cache_resource
-def load_vectorstore():
-    embeddings = get_embeddings()
-    return FAISS.load_local(str(VECTORSTORE_DIR), embeddings, allow_dangerous_deserialization=True)
-
-def build_context(docs):
-    blocks = []
-    citations = []
-    for i, d in enumerate(docs, start=1):
-        src = os.path.basename(d.metadata.get("source", "unknown"))
-        page = d.metadata.get("page", "unknown")
-        text = d.page_content.strip().replace("\n", " ")
-        blocks.append(f"[{i}] Source: {src} | Page: {page}\n{text}")
-        citations.append((i, src, page, d.page_content.strip()))
-    return "\n\n".join(blocks), citations
-
-def compress_context_for_question(citations):
-    # Keep only strongest ~3 evidence snippets to tightly ground the model
-    short = []
-    for idx, src, page, raw_text in citations[:3]:
-        snippet = raw_text.strip().replace("\n", " ")
-        if len(snippet) > 380:
-            snippet = snippet[:380] + "…"
-        short.append(f"[{idx}] ({src} p{page}) {snippet}")
-    return "\n".join(short)
-
-def confidence_label(scores):
-    """
-    In FAISS similarity_search_with_score, the score is often distance-like:
-    lower score = closer. We'll keep heuristic thresholds.
-    If your scores behave opposite, adjust thresholds.
-    """
-    if not scores:
-        return "Low", "🔴"
-
-    best = scores[0]
-    if best < 0.35:
-        return "High", "🟢"
-    if best < 0.55:
-        return "Medium", "🟡"
-    return "Low", "🔴"
-
-def groq_answer(question, full_context, evidence_snippets, model_name="llama-3.3-70b-versatile"):
-    key = os.environ.get("GROQ_API_KEY")
-    if not key:
-        raise ValueError("GROQ_API_KEY missing. Add it to .env")
-
-    client = Groq(api_key=key)
-
-    system = (
-        "You are BioQuery, a careful biology research assistant.\n"
-        "You MUST follow these rules:\n"
-        "1) Use ONLY the provided context from the selected paper(s).\n"
-        "2) If the answer is not clearly supported in the context, say exactly:\n"
-        "   \"I don't know based on the provided paper(s).\"\n"
-        "3) Write in simple, student-friendly English.\n"
-        "4) Always include citations like [1], [2] next to the sentence they support.\n"
-        "5) Output MUST follow this exact format:\n"
-        "   Direct Answer: (2–4 lines)\n"
-        "   Key Points:\n"
-        "   - bullet 1\n"
-        "   - bullet 2\n"
-        "   Evidence:\n"
-        "   - \"short quote/snippet\" [#]\n"
-        "   - \"short quote/snippet\" [#]\n"
-    )
-
-    user = (
-        f"Question: {question}\n\n"
-        f"Top Evidence Snippets (most important):\n{evidence_snippets}\n\n"
-        f"Full Context:\n{full_context}\n\n"
-        "Now answer using the required format."
-    )
-
-    t0 = time.time()
-    resp = client.chat.completions.create(
-        model=model_name,
-        temperature=0,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    t1 = time.time()
-    return resp.choices[0].message.content, (t1 - t0)
-
-# ---------- UI ----------
-st.markdown(
-    """
-    <div style="padding: 10px 0;">
-      <h1 style="margin-bottom: 0;">🧬 BioQuery</h1>
-      <p style="margin-top: 6px; color: #9aa4b2;">
-        Document-grounded RAG assistant • Better answers • Citations + evidence snippets • Safer (anti-hallucination)
-      </p>
-    </div>
-    """,
-    unsafe_allow_html=True
+# ── Page config ────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="BioQuery",
+    page_icon="🧬",
+    layout="wide",
 )
 
-with st.sidebar:
-    st.header("📄 Paper Library")
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background-color: #0f172a;
+    }
+    [data-testid="stSidebar"] * {
+        color: #e2e8f0 !important;
+    }
 
-    uploaded = st.file_uploader("Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
-    if st.button("Save Uploads"):
-        PDF_DIR.mkdir(parents=True, exist_ok=True)
-        count = 0
-        for f in uploaded or []:
-            out = PDF_DIR / f.name
-            out.write_bytes(f.read())
-            count += 1
-        st.success(f"Saved {count} PDF(s) into {PDF_DIR}")
+    /* Header banner */
+    .app-header {
+        background: linear-gradient(135deg, #1e3a5f, #0e7490);
+        padding: 1.2rem 1.8rem;
+        border-radius: 10px;
+        margin-bottom: 1.2rem;
+    }
+    .app-header h2 { margin: 0; color: white; font-size: 1.6rem; }
+    .app-header p  { margin: 0.3rem 0 0; color: #bae6fd; font-size: 0.9rem; }
+
+    /* Evidence panel card */
+    .evidence-card {
+        background: #1e293b;
+        border-left: 3px solid #0e7490;
+        border-radius: 6px;
+        padding: 0.8rem 1rem;
+        margin-bottom: 0.6rem;
+        font-size: 0.85rem;
+        color: #cbd5e1;
+    }
+    .evidence-label {
+        font-weight: 600;
+        color: #7dd3fc;
+        margin-bottom: 0.3rem;
+    }
+
+    /* Confidence badges */
+    .badge-high   { color: #4ade80; font-weight: 600; }
+    .badge-medium { color: #facc15; font-weight: 600; }
+    .badge-low    { color: #f87171; font-weight: 600; }
+
+    /* Status step labels in sidebar */
+    .step-label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #94a3b8;
+        margin-bottom: 0.2rem;
+    }
+
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def vectorstore_is_ready() -> bool:
+    vs = get_vectorstore_dir()
+    return (vs / "index.faiss").exists() and (vs / "index.pkl").exists()
+
+def is_summary_request(text: str) -> bool:
+    """
+    Checks if the user's message is asking for a paper summary.
+    Simple keyword check — no ML needed.
+    """
+    keywords = [
+        "summarize", "summarise", "summary", "summarization",
+        "overview", "brief me", "what is this paper about",
+        "what's this paper about", "give me an overview",
+        "explain this paper", "describe this paper",
+    ]
+    lower = text.lower().strip()
+    return any(kw in lower for kw in keywords)
+
+# ── Session state ──────────────────────────────────────────────────────────────
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []   # list of {"role": str, "content": str}
+
+if "last_citations" not in st.session_state:
+    st.session_state.last_citations = [] # citation dicts from the latest answer
+
+if "index_built" not in st.session_state:
+    st.session_state.index_built = vectorstore_is_ready()
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.markdown("## 🧬 BioQuery")
+    st.caption("Biology Research Paper Assistant")
+    st.divider()
+
+    # ── Step 1: Upload ─────────────────────────────────────────────────────────
+    st.markdown('<p class="step-label">Step 1 — Upload PDFs</p>', unsafe_allow_html=True)
+
+    uploaded_files = st.file_uploader(
+        "Upload one or more biology PDFs",
+        type=["pdf"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+
+    if uploaded_files:
+        if st.button("💾 Save PDFs", use_container_width=True):
+            pdf_dir = get_pdf_dir()
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            for f in uploaded_files:
+                (pdf_dir / f.name).write_bytes(f.read())
+            st.success(f"Saved {len(uploaded_files)} file(s).")
+            st.rerun()
+
+    # Show list of available PDFs
+    pdf_dir = get_pdf_dir()
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    available_pdfs = sorted([p.name for p in pdf_dir.glob("*.pdf")])
+
+    if available_pdfs:
+        st.markdown("**Uploaded papers:**")
+        for name in available_pdfs:
+            st.markdown(f"• {name}")
+    else:
+        st.info("No PDFs yet. Upload above.")
+
+    st.divider()
+
+    # ── Step 2: Build Index ────────────────────────────────────────────────────
+    st.markdown('<p class="step-label">Step 2 — Build Index</p>', unsafe_allow_html=True)
+    st.caption("Converts your PDFs into a searchable vector database.")
+
+    if st.button("🔨 Build / Rebuild Index", use_container_width=True, type="primary"):
+        if not available_pdfs:
+            st.error("Upload at least one PDF first.")
+        else:
+            pdf_paths = [str(pdf_dir / n) for n in available_pdfs]
+            with st.spinner("Indexing PDFs… (first run may take ~1 min)"):
+                ok, msg = ingest_pdfs_from_paths(pdf_paths)
+            if ok:
+                st.success(msg)
+                st.session_state.index_built = True
+                st.session_state.chat_history = []
+                st.session_state.last_citations = []
+            else:
+                st.error(msg)
+
+    status = "✅ Ready" if st.session_state.index_built else "⚠️ Not built yet"
+    st.markdown(f"**Index status:** {status}")
+
+    st.divider()
+
+    # ── Settings ───────────────────────────────────────────────────────────────
+    st.markdown('<p class="step-label">Settings</p>', unsafe_allow_html=True)
+
+    selected_model = st.selectbox(
+        "Groq model",
+        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        index=0,
+        help="70b = more accurate | 8b = faster",
+    )
+    top_k = st.slider("Passages to retrieve", min_value=2, max_value=8, value=4)
+
+    st.divider()
+    if st.button("🗑️ Clear Chat", use_container_width=True):
+        st.session_state.chat_history = []
+        st.session_state.last_citations = []
         st.rerun()
 
-    pdfs = list_pdfs()
-    if not pdfs:
-        st.info("No PDFs found yet. Upload PDFs or place them in `data/raw_pdfs/`.")
+# ── Guard: index not ready ─────────────────────────────────────────────────────
 
-    selected = st.multiselect("Select PDFs to index/search", options=pdfs, default=pdfs[:2] if len(pdfs) >= 2 else pdfs)
+if not st.session_state.index_built:
+    st.markdown("""
+    <div class="app-header">
+        <h2>🧬 Welcome to BioQuery</h2>
+        <p>Your biology research paper assistant — ask questions, get cited answers.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.divider()
-    st.subheader("🧱 Index")
-    st.caption("Build FAISS vector index for selected PDFs.")
-    if st.button("Build / Rebuild Index"):
-        ok, msg = ingest_selected_pdfs(selected)
-        if ok:
-            st.success(msg)
-            load_vectorstore.clear()
-        else:
-            st.error(msg)
-
-    st.write("**Index status:**", "✅ Ready" if vectorstore_exists() else "⚠️ Not built yet")
-
-    st.divider()
-    st.subheader("⚙️ Settings")
-    model = st.selectbox("Groq model", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"], index=0)
-    k = st.slider("Top-k passages", 2, 8, 4)
-    strict_mode = st.toggle("Strict grounded mode (refuse if evidence weak)", value=True)
-
-# chat state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if not vectorstore_exists():
-    st.warning("Build the index first using the sidebar → **Build / Rebuild Index**.")
+    st.info(
+        "**To get started:**\n\n"
+        "1. Upload your biology PDF(s) in the sidebar.\n"
+        "2. Click **Save PDFs**.\n"
+        "3. Click **Build / Rebuild Index**.\n"
+        "4. Then come back here to ask questions!"
+    )
     st.stop()
 
-chat_col, sources_col = st.columns([1.15, 0.85])
+# ── Main layout ────────────────────────────────────────────────────────────────
 
+st.markdown("""
+<div class="app-header">
+    <h2>🧬 BioQuery</h2>
+    <p>Ask questions about your uploaded biology paper(s). Try: <em>"Summarize this paper"</em>, <em>"What methods were used?"</em>, <em>"What are the main findings?"</em></p>
+</div>
+""", unsafe_allow_html=True)
+
+chat_col, evidence_col = st.columns([3, 2])
+
+# ── LEFT: Chat ─────────────────────────────────────────────────────────────────
 with chat_col:
-    st.subheader("💬 Chat with your paper(s)")
-    st.caption("Tip: Ask questions directly related to the selected papers (methods, datasets, results, conclusions).")
+    # Quick-start buttons
+    st.markdown("**Quick questions:**")
+    qcols = st.columns(3)
+    sample_questions = [
+        "Summarize this paper",
+        "What methods are used?",
+        "What are the main findings?",
+        "What datasets were used?",
+        "What are the conclusions?",
+        "What is the research question?",
+    ]
+    for i, q in enumerate(sample_questions):
+        if qcols[i % 3].button(q, key=f"sq_{i}", use_container_width=True):
+            st.session_state["prefill"] = q
 
-    for m in st.session_state.messages:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+    st.markdown("---")
 
-    user_q = st.chat_input("Ask a question (e.g., 'Summarize antimicrobial peptides discussed in the paper')")
-    if user_q:
-        st.session_state.messages.append({"role": "user", "content": user_q})
+    # Render chat history
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Get user input (typed or from quick button)
+    prefill = st.session_state.pop("prefill", None)
+    user_input = st.chat_input("Ask a question about your paper(s)…")
+    question = prefill or user_input
+
+    if question:
+        # Show the user message
+        st.session_state.chat_history.append({"role": "user", "content": question})
         with st.chat_message("user"):
-            st.markdown(user_q)
+            st.markdown(question)
 
-        db = load_vectorstore()
-
-        # ---- Retrieval (MMR for better evidence diversity) ----
-        t0 = time.time()
-        try:
-            docs = db.max_marginal_relevance_search(user_q, k=k, fetch_k=20)
-            docs_and_scores = [(d, 0.45) for d in docs]  # dummy scores since MMR doesn't return scores
-        except Exception:
-            # fallback if MMR not available
-            docs_and_scores = db.similarity_search_with_score(user_q, k=k)
-            docs = [d for d, _ in docs_and_scores]
-
-        t1 = time.time()
-
-        full_context, citations = build_context(docs)
-        evidence_snippets = compress_context_for_question(citations)
-
-        # ---- Confidence (use heuristics; if dummy, treat as Medium) ----
-        scores = [s for _, s in docs_and_scores] if docs_and_scores else []
-        conf, badge = confidence_label(scores) if scores else ("Medium", "🟡")
-
-        # ---- Grounded refusal rule ----
-        refuse = strict_mode and (conf == "Low")
-
-        if refuse:
-            assistant_text = (
-                "I don't know based on the provided paper(s).\n\n"
-                "_Reason_: The selected paper(s) do not contain enough focused evidence to answer reliably."
-            )
-            llm_time = 0.0
-        else:
-            assistant_text, llm_time = groq_answer(
-                question=user_q,
-                full_context=full_context,
-                evidence_snippets=evidence_snippets,
-                model_name=model,
-            )
-
-        st.session_state.messages.append({"role": "assistant", "content": assistant_text})
-
+        # Generate response
         with st.chat_message("assistant"):
-            st.markdown(f"**Confidence:** {badge} **{conf}**")
-            st.markdown(assistant_text)
+            db = load_vectorstore()
 
-            # show sources summary inline
-            unique_sources = sorted({f"{src} p{page}" for _, src, page, _ in citations})
-            if unique_sources:
-                st.markdown("**Sources used:** " + ", ".join(unique_sources))
+            if is_summary_request(question):
+                # ── Summary path ──────────────────────────────────────────────
+                with st.spinner("Generating paper summary…"):
+                    result = summarize_paper(db, model=selected_model)
 
-            st.caption(f"Retrieval: {t1-t0:.2f}s • LLM: {llm_time:.2f}s • Top-k: {k}")
+                st.markdown(result["summary"])
+                st.session_state.last_citations = result["citations"]
+                answer_text = result["summary"]
 
-        st.session_state.last_citations = citations
+            else:
+                # ── Q&A path ──────────────────────────────────────────────────
+                with st.spinner("Searching the paper and generating answer…"):
+                    result = answer_question(db, question, k=top_k, model=selected_model)
 
-with sources_col:
-    st.subheader("📌 Evidence & Citations")
+                # Confidence badge
+                conf = result["confidence_label"]
+                badge = result["confidence_emoji"]
+                badge_class = {"High": "badge-high", "Medium": "badge-medium", "Low": "badge-low"}.get(conf, "")
+                st.markdown(
+                    f"<span class='{badge_class}'>{badge} {conf} confidence</span>",
+                    unsafe_allow_html=True,
+                )
 
-    citations = st.session_state.get("last_citations", [])
+                st.markdown(result["answer"])
+
+                # Compact source list below the answer
+                unique_sources = sorted({c["label"] for c in result["citations"]})
+                if unique_sources:
+                    st.caption("📎 Sources: " + " · ".join(unique_sources))
+
+                st.session_state.last_citations = result["citations"]
+                answer_text = result["answer"]
+
+        st.session_state.chat_history.append({"role": "assistant", "content": answer_text})
+
+# ── RIGHT: Evidence panel ──────────────────────────────────────────────────────
+with evidence_col:
+    st.markdown("### 📌 Source Evidence")
+
+    citations = st.session_state.last_citations
     if not citations:
-        st.info("Ask a question to see supporting evidence here.")
+        st.info("Ask a question to see the source passages used to generate the answer.")
     else:
-        for idx, src, page, raw_text in citations:
-            with st.expander(f"[{idx}] {src} • Page {page}"):
-                snippet = raw_text.strip()
-                if len(snippet) > 1100:
-                    snippet = snippet[:1100] + "…"
-                st.write(snippet)
+        st.caption(f"{len(citations)} passage(s) retrieved:")
+        for c in citations:
+            with st.expander(f"[{c['index']}] {c['label']}"):
+                snippet = c["text"].strip()
+                if len(snippet) > 700:
+                    snippet = snippet[:700] + "…"
+                st.markdown(snippet)

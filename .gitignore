@@ -1,21 +1,31 @@
 # Virtual environment
 .venv/
+venv/
+env/
 
-# Environment variables
+# Environment variables — NEVER commit your API keys
 .env
 
-# Vector database
+# FAISS vector index (auto-generated, not needed in source control)
 vectorstore/
 
-# Python cache
+# Python cache files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# macOS
+# macOS system files
 .DS_Store
+.AppleDouble
 
-# Streamlit
+# Streamlit runtime
 .streamlit/
 
-# PDFs (optional – recommended)
+# PDFs (optional — omit if you want to commit sample PDFs)
 data/raw_pdfs/*.pdf
+
+# Editor files
+.idea/
+.vscode/
+*.swp
