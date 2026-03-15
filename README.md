@@ -211,11 +211,6 @@ The Streamlit frontend:
 - Right panel: evidence snippets with expandable source passages
 - `is_summary_request()`: keyword detection to route summary vs Q&A
 
----
-
-## 🎤 Interview Explanation (one paragraph)
-
-> *"BioQuery is a Retrieval-Augmented Generation system. First, I built an indexing pipeline that loads PDFs page by page, splits them into ~800-character overlapping chunks, and converts each chunk to a vector embedding using a Sentence-Transformer model. These vectors are stored in a FAISS index on disk. When a user asks a question, I embed the question the same way and use FAISS to find the top-k most similar chunks by L2 distance — those are the most relevant passages from the paper. I then pass those chunks as context to the Groq LLM with a strict system prompt that forces the model to only use the provided context and always cite sources. If the answer isn't in the paper, the model says so explicitly, which prevents hallucination. The Streamlit UI adds a clean upload → index → chat flow with an evidence panel showing the exact retrieved passages."*
 
 ---
 
